@@ -1,52 +1,67 @@
-from flask import Flask, render_template, request, send_from_directory
-from pytube import YouTube
-from moviepy.editor import VideoFileClip
-import os
-import shutil
+from flask import Flask, render_template, request, send_file
+from pytubefix import YouTube
+from io import BytesIO
 
 app = Flask(__name__)
 
-# Ruta predeterminada para guardar los videos
-DEFAULT_DOWNLOAD_PATH = "downloads"
+# Ruta al archivo de cookies exportado desde el navegador
+COOKIE_FILE = "cookies.txt"
 
-# Asegurarse de que la carpeta de descargas existe
-if not os.path.exists(DEFAULT_DOWNLOAD_PATH):
-    os.makedirs(DEFAULT_DOWNLOAD_PATH)
+def apply_cookies_to_pytube(url):
+    """
+    Inicializa la instancia de YouTube con cookies cargadas desde un archivo.
+    """
+    # Crear una instancia de YouTube con el archivo de cookies
+    yt = YouTube(url, use_oauth=False, allow_oauth_cache=True, use_po_token=True)
+    return yt
 
-# Página principal
-@app.route("/", methods=["GET", "POST"])
+def download_video_or_audio(url, format_type):
+    """
+    Descarga un video o audio de YouTube y lo guarda en memoria.
+    """
+    yt = apply_cookies_to_pytube(url)
+
+    # Seleccionar el stream basado en el formato
+    if format_type == 'audio':
+        stream = yt.streams.filter(only_audio=True).first()
+    else:
+        stream = yt.streams.get_highest_resolution()
+
+    # Descargar el archivo al buffer
+    buffer = BytesIO()
+    stream.stream_to_buffer(buffer)
+    buffer.seek(0)
+
+    title = yt.title
+    ext = 'mp3' if format_type == 'audio' else 'mp4'
+    return buffer, title, ext
+
+@app.route('/')
 def index():
-    if request.method == "POST":
-        # Obtener enlace de YouTube y ruta de descarga
-        video_link = request.form.get("video_link")
-        user_path = request.form.get("download_path", DEFAULT_DOWNLOAD_PATH)
-        
-        # Verificar que los campos no estén vacíos
-        if not video_link or not user_path:
-            return "Faltan datos: Link o ruta de descarga", 400
+    return render_template('index.html')
 
-        # Descargar video
-        try:
-            screen_title = "Descargando..."
-            mp4_video = YouTube(video_link).streams.get_highest_resolution().download(user_path)
+@app.route('/download', methods=['POST'])
+def download_video():
+    try:
+        # Obtener la URL del video desde el formulario
+        url = request.form.get('video_url')
+        format_type = request.form.get('format')  # Obtener el formato seleccionado
 
-            # Abrir y cerrar el video con moviepy para verificar que se descargó correctamente
-            vid_clip = VideoFileClip(mp4_video)
-            vid_clip.close()
+        # Descargar el video o audio
+        buffer, title, ext = download_video_or_audio(url, format_type)
 
-            screen_title = "Descarga completa"
-            return f"Descarga completa: {mp4_video}", 200
+        # Descargar el archivo a través del navegador
+        return send_file(
+            buffer,
+            as_attachment=True,
+            download_name=f"{title}.{ext}",
+            mimetype="audio/mpeg" if ext == 'mp3' else "video/mp4"
+        )
 
-        except Exception as e:
-            return f"Error en la descarga: {str(e)}", 500
+    except Exception as e:
+        return f"Error: {e}"
 
-    return render_template("index.html")
-
-# Ruta para servir los archivos descargados
-@app.route("/downloads/<filename>")
-def download_file(filename):
-    return send_from_directory(DEFAULT_DOWNLOAD_PATH, filename)
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(debug=True)
+
 
