@@ -1,67 +1,66 @@
-from flask import Flask, render_template, request, send_file
-from pytubefix import YouTube
-from io import BytesIO
+from flask import Flask, render_template, request, jsonify, send_file
+from yt_dlp import YoutubeDL
+import requests
+import os
 
 app = Flask(__name__)
 
-# Ruta al archivo de cookies exportado desde el navegador
-COOKIE_FILE = "cookies.txt"
+# Configuración de reCAPTCHA
+RECAPTCHA_SITE_KEY = "6Ld0aa0qAAAAAMQPew3iCQ0jXAjv8ieLf9F9-rlZ"
+RECAPTCHA_SECRET_KEY = "6Ld0aa0qAAAAAJrbEnUxeFdJtxZHMrTnFMo88RKy"
 
-def apply_cookies_to_pytube(url):
-    """
-    Inicializa la instancia de YouTube con cookies cargadas desde un archivo.
-    """
-    # Crear una instancia de YouTube con el archivo de cookies
-    yt = YouTube(url, use_oauth=False, allow_oauth_cache=True, use_po_token=True)
-    return yt
-
-def download_video_or_audio(url, format_type):
-    """
-    Descarga un video o audio de YouTube y lo guarda en memoria.
-    """
-    yt = apply_cookies_to_pytube(url)
-
-    # Seleccionar el stream basado en el formato
-    if format_type == 'audio':
-        stream = yt.streams.filter(only_audio=True).first()
-    else:
-        stream = yt.streams.get_highest_resolution()
-
-    # Descargar el archivo al buffer
-    buffer = BytesIO()
-    stream.stream_to_buffer(buffer)
-    buffer.seek(0)
-
-    title = yt.title
-    ext = 'mp3' if format_type == 'audio' else 'mp4'
-    return buffer, title, ext
-
+# Ruta principal con reCAPTCHA
 @app.route('/')
 def index():
-    return render_template('index.html')
+    return render_template('index.html', site_key=RECAPTCHA_SITE_KEY)
 
+# Ruta para manejar descargas
 @app.route('/download', methods=['POST'])
-def download_video():
+def download():
+    url = request.form.get('url')
+    format_type = request.form.get('format')
+    recaptcha_response = request.form.get('g-recaptcha-response')
+
+    if not url or not recaptcha_response:
+        return jsonify({"error": "URL o reCAPTCHA no válidos"}), 400
+
+    # Verificar reCAPTCHA
+    recaptcha_data = {
+        'secret': RECAPTCHA_SECRET_KEY,
+        'response': recaptcha_response
+    }
+    recaptcha_verify = requests.post('https://www.google.com/recaptcha/api/siteverify', data=recaptcha_data).json()
+    if not recaptcha_verify.get('success'):
+        return jsonify({"error": "reCAPTCHA inválido"}), 400
+
+    # Configuración de yt-dlp para descarga directa de formatos
+    if format_type == 'audio':
+        ydl_opts = {
+            'format': 'bestaudio/best',  # Descargar el mejor formato de audio disponible
+            'outtmpl': '%(title)s.mp3',  # Nombre del archivo
+            'noplaylist': True,
+            'cookiefile': 'cookies.txt',  # Ruta al archivo de cookies
+        }
+    else:  # Si es video, descargar en formato MP4
+        ydl_opts = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio',  # Aseguramos MP4 como formato de video
+            'outtmpl': '%(title)s.mp4',  # Nombre del archivo
+            'noplaylist': True,
+            'cookiefile': 'cookies.txt',  # Ruta al archivo de cookies
+        }
+
     try:
-        # Obtener la URL del video desde el formulario
-        url = request.form.get('video_url')
-        format_type = request.form.get('format')  # Obtener el formato seleccionado
+        # Descargar con yt-dlp
+        with YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            filename = ydl.prepare_filename(info)
+            ydl.download([url])
 
-        # Descargar el video o audio
-        buffer, title, ext = download_video_or_audio(url, format_type)
-
-        # Descargar el archivo a través del navegador
-        return send_file(
-            buffer,
-            as_attachment=True,
-            download_name=f"{title}.{ext}",
-            mimetype="audio/mpeg" if ext == 'mp3' else "video/mp4"
-        )
-
+        # Enviar archivo descargado
+        return send_file(filename, as_attachment=True)
     except Exception as e:
-        return f"Error: {e}"
+        return jsonify({"error": f"No se pudo descargar el archivo: {e}"}), 500
 
 if __name__ == '__main__':
     app.run(debug=True)
-
 
